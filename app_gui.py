@@ -13,22 +13,35 @@ from datetime import datetime
 import requests
 import pandas as pd
 import matplotlib
-matplotlib.use('QtAgg')
+try:
+    matplotlib.use('QtAgg')
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QGridLayout, QLabel, QPushButton, QComboBox, QTableWidget,
+        QTableWidgetItem, QHeaderView, QSplitter, QMessageBox, QFrame,
+        QGroupBox, QStatusBar, QStyleFactory, QTextEdit, QLineEdit
+    )
+    from PyQt6.QtCore import Qt, pyqtSignal, QObject
+    from PyQt6.QtGui import QFont, QColor
+    HAS_QT = True
+except Exception:
+    HAS_QT = False
+    class QObject:
+        pass
+    class pyqtSignal:
+        def __init__(self, *args): pass
+        def connect(self, func): pass
+        def emit(self, *args): pass
+
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QPushButton, QComboBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QSplitter, QMessageBox, QFrame,
-    QGroupBox, QStatusBar, QStyleFactory, QTextEdit, QLineEdit
-)
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor
-
 # 한글 폰트 및 마이너스 깨짐 방지
-plt.rcParams['font.family'] = 'Malgun Gothic'
+try:
+    plt.rcParams['font.family'] = 'Malgun Gothic'
+except Exception:
+    pass
 plt.rcParams['axes.unicode_minus'] = False
 
 # ── 상수 및 기본 설정 ──────────────────────────────────────────
