@@ -10,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from app_gui import PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
+from logic import PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
 
 # 한글 폰트 설정
 plt.rcParams['axes.unicode_minus'] = False

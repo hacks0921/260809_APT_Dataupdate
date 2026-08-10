@@ -5,7 +5,7 @@
 
 import pytest
 import pandas as pd
-from app_gui import ScientificCalculatorLogic
+from logic import ScientificCalculatorLogic
 
 
 def test_history_loading_existing_file_returns_dataframe(tmp_path):
