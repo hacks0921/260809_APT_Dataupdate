@@ -37,7 +37,7 @@ HISTORY_PATH = "my_properties_history.csv"
 DEFAULT_DOMAIN = "moneysimul.com"
 
 PROPERTIES_DEFAULT = [
-    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2001"},
+    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "광명역 데시앙 104동", "hoNm": "2001"},
     {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
     {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 풍림아이원",     "pnu": "4375033026100010000", "dongNm": "201", "hoNm": "1301"},
     {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
@@ -112,6 +112,19 @@ class ScientificCalculatorLogic:
         except Exception as e:
             logger.error(f"데이터 로드 실패: {e}")
             return pd.DataFrame(columns=["label", "year", "price"])
+
+    def remove_property(self, label: str) -> bool:
+        """등록된 부동산을 목록 및 이력 DB(CSV)에서 제거합니다."""
+        try:
+            self.properties = [p for p in self.properties if p["label"] != label]
+            if not self.history_df.empty and 'label' in self.history_df.columns:
+                self.history_df = self.history_df[self.history_df["label"] != label]
+                self.history_df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
+            logger.info(f"🗑️ [{label}] 부동산 데이터 삭제 완료")
+            return True
+        except Exception as e:
+            logger.error(f"부동산 삭제 에러 ({label}): {e}")
+            return False
 
     def get_available_years(self) -> list[int]:
         """저장된 데이터의 연도 목록을 정렬하여 반환합니다."""
@@ -206,8 +219,8 @@ class ScientificCalculatorLogic:
 
     def fetch_all_years_for_property(self, prop: dict, start_year: int = 2020, end_year: int | None = None, domain: str = DEFAULT_DOMAIN) -> int:
         """
-        신규 추가 아파트 주소에 대해 2020년부터 현재 연도까지의 공시가 변동 추이 데이터를
-        자동으로 수집 및 추정 생성하여 이력 DB(CSV)와 차트에 반영합니다.
+        신규 추가 아파트 주소에 대해 2020년부터 현재 연도까지의 공시가를 실제 API로 수집합니다.
+        PNU 조회가 안 되거나 데이터 수집에 실패하면 가짜 데이터를 생성하지 않고 0을 반환합니다.
         """
         if end_year is None:
             end_year = datetime.now().year
@@ -221,46 +234,31 @@ class ScientificCalculatorLogic:
             pnu = self.find_pnu_from_api(prop["search_addr"], domain)
             if pnu:
                 prop["pnu"] = pnu
+            else:
+                logger.warning(f"🔴 [{label}] PNU 자동 탐색 실패! 해당 주소로는 조회가 불가능합니다.")
+                return 0
 
         logger.info(f"==================================================")
-        logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 전수 데이터 조회 및 수집 시작...")
+        logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 데이터 API 조회 및 수집 시작...")
 
         # 1. 이미 데이터가 존재하는지 확인
         existing_rows = self.history_df[self.history_df["label"] == label]
         if not existing_rows.empty and len(existing_rows) >= (end_year - start_year + 1):
             cnt = len(existing_rows)
-            logger.info(f"✨ [{label}] 2020년~{end_year}년 데이터 ({cnt}개 연도) 로드 및 준비 완료!")
+            logger.info(f"✨ [{label}] 2020년~{end_year}년 데이터 ({cnt}개 연도) 로드 완료!")
             return cnt
 
-        # 2. 신규 집 데이터 생성/수집 (브이월드 API 및 공시가격 추이 패턴 적용)
-        logger.info(f"🌐 [{label}] 신규 부동산 2020년~{end_year}년 공시가 변동 추이 자동 산출 중...")
 
-        # 기본 시세 베이스 (API 응답 또는 2억 5천만원 기준)
-        base_price = 250000000
-        if pnu:
-            api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, 2024, domain)
-            if api_price and api_price > 50000000:
-                base_price = api_price
-
-        # 대한민국 2020년~2026년 공시가격 변동률 계수 패턴
-        # 2020(1.0) -> 2021(1.22) -> 2022(1.35) -> 2023(0.95) -> 2024(1.05) -> 2025(1.15) -> 2026(1.28)
-        trend_ratios = {
-            2020: 0.85,
-            2021: 1.05,
-            2022: 1.20,
-            2023: 0.90,
-            2024: 1.00,
-            2025: 1.08,
-            2026: 1.18
-        }
-
+        # 2. 연도별 실제 API 호출 수행 (가짜 고정계수 추정 제거)
         new_rows = []
         for year in range(start_year, end_year + 1):
-            ratio = trend_ratios.get(year, 1.0)
-            calculated_price = int(base_price * ratio)
-            # 만원 단위로 깔끔하게 절사
-            calculated_price = (calculated_price // 10000) * 10000
-            new_rows.append({"label": label, "year": year, "price": calculated_price})
+            api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, year, domain)
+            if api_price and api_price > 0:
+                new_rows.append({"label": label, "year": year, "price": api_price})
+
+        if not new_rows:
+            logger.warning(f"🔴 [{label}] 연도별 공시가격 API 수집에 실패했거나 실제 데이터가 존재하지 않습니다.")
+            return 0
 
         df_new = pd.DataFrame(new_rows)
         self.history_df = pd.concat([self.history_df, df_new], ignore_index=True)
@@ -268,7 +266,7 @@ class ScientificCalculatorLogic:
         self.history_df = self.history_df.sort_values(["label", "year"])
         self.history_df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
 
-        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 7건 수집 및 차트 업데이트 완료!")
+        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 {len(df_new)}건 API 수집 완료!")
         return len(df_new)
 
 
@@ -460,12 +458,20 @@ class ScientificCalculatorGUI(QMainWindow):
         self.canvas_chart.draw()
         logger.info("시스템 시작 준비 완료 — 조회를 원하는 부동산의 '⚡ 데이터 조회' 버튼을 눌러주세요.")
 
+    def _clear_layout(self, layout):
+        """레이아웃 내부의 모든 위젯과 하위 레이아웃을 완벽히 재귀 삭제합니다."""
+        if layout is not None:
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+                elif item.layout() is not None:
+                    self._clear_layout(item.layout())
+
     def render_property_cards(self):
         """내 등록 부동산 목록을 카드 형태로 시각화"""
-        while self.layout_cards_container.count():
-            child = self.layout_cards_container.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        self._clear_layout(self.layout_cards_container)
 
         layout_cards = QHBoxLayout()
         layout_cards.setSpacing(10)
@@ -502,24 +508,63 @@ class ScientificCalculatorGUI(QMainWindow):
             lbl_pnu.setFont(QFont("Malgun Gothic", 8))
             lbl_pnu.setStyleSheet("color: #6C757D;")
 
-            btn_fetch_single = QPushButton("⚡ 이 집 데이터 조회")
+            layout_btns = QHBoxLayout()
+            layout_btns.setSpacing(4)
+
+            btn_fetch_single = QPushButton("⚡ 데이터 조회")
             btn_fetch_single.setFont(QFont("Malgun Gothic", 8, QFont.Weight.Bold))
             btn_fetch_single.setStyleSheet("""
                 QPushButton {
-                    background-color: #212529; color: white; border-radius: 4px; padding: 4px 8px;
+                    background-color: #212529; color: white; border-radius: 4px; padding: 4px 6px;
                 }
                 QPushButton:hover { background-color: #0D6EFD; }
             """)
             btn_fetch_single.clicked.connect(lambda checked, p=prop: self.handle_fetch_single_property(p))
 
+            btn_remove_single = QPushButton("🗑️ 삭제")
+            btn_remove_single.setFont(QFont("Malgun Gothic", 8, QFont.Weight.Bold))
+            btn_remove_single.setStyleSheet("""
+                QPushButton {
+                    background-color: #DC3545; color: white; border-radius: 4px; padding: 4px 6px;
+                }
+                QPushButton:hover { background-color: #BB2D3B; }
+            """)
+            btn_remove_single.clicked.connect(lambda checked, p=prop: self.handle_remove_property(p))
+
+            layout_btns.addWidget(btn_fetch_single)
+            layout_btns.addWidget(btn_remove_single)
+
             layout_card.addWidget(lbl_title)
             layout_card.addWidget(lbl_addr)
             layout_card.addWidget(lbl_pnu)
-            layout_card.addWidget(btn_fetch_single)
+            layout_card.addLayout(layout_btns)
 
             layout_cards.addWidget(card)
 
         self.layout_cards_container.addLayout(layout_cards)
+
+    def handle_remove_property(self, prop: dict):
+        """선택한 부동산 삭제 처리 및 테이블/차트 갱신"""
+        label = prop["label"]
+        reply = QMessageBox.question(
+            self, "부동산 삭제 확인",
+            f"정말로 '{label}' ({prop['dongNm']}동 {prop['hoNm']}호) 부동산을 목록 및 데이터에서 삭제하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            success = self.logic.remove_property(label)
+            if success:
+                if label in self.active_labels:
+                    self.active_labels.remove(label)
+
+                self.render_property_cards()
+                self.populate_year_combo()
+                self.refresh_dashboard()
+
+                self.statusBar_info.showMessage(f"[{label}] 부동산 데이터가 삭제되었습니다.", 5000)
+                QMessageBox.information(self, "삭제 완료", f"'{label}' 부동산 데이터가 성공적으로 제거되었습니다.")
 
     def handle_fetch_single_property(self, prop: dict):
         """사용자가 선택한 특정 개별 집만 데이터 조회 및 테이블/차트 업데이트"""
@@ -527,7 +572,15 @@ class ScientificCalculatorGUI(QMainWindow):
         self.statusBar_info.showMessage(f"[{label}] 데이터 조회 및 업데이트 실행 중...")
 
         current_year = datetime.now().year
-        self.logic.fetch_all_years_for_property(prop, start_year=2020, end_year=current_year)
+        cnt = self.logic.fetch_all_years_for_property(prop, start_year=2020, end_year=current_year)
+
+        if cnt == 0:
+            self.statusBar_info.showMessage(f"⚠️ [{label}] 브이월드 API 데이터 조회 실패", 5000)
+            QMessageBox.warning(
+                self, "조회 실패",
+                f"⚠️ [{label}] 브이월드 API 조회가 되지 않습니다.\n해당 주소의 PNU를 찾을 수 없거나 공시가 데이터가 준비되지 않았습니다."
+            )
+            return
 
         if label not in self.active_labels:
             self.active_labels.append(label)
@@ -571,13 +624,21 @@ class ScientificCalculatorGUI(QMainWindow):
             "hoNm": ho
         }
 
-        if not any(p["label"] == name for p in self.logic.properties):
-            self.logic.properties.append(new_prop)
-
         self.statusBar_info.showMessage(f"'{name}' 2020년~현재 데이터 자동 수집 및 그래프 업데이트 중...")
 
         current_year = datetime.now().year
-        self.logic.fetch_all_years_for_property(new_prop, start_year=2020, end_year=current_year)
+        cnt = self.logic.fetch_all_years_for_property(new_prop, start_year=2020, end_year=current_year)
+
+        if cnt == 0:
+            self.statusBar_info.showMessage(f"⚠️ [{name}] 데이터 조회 실패로 등록 취소됨", 5000)
+            QMessageBox.warning(
+                self, "신규 등록 및 조회 실패",
+                f"⚠️ [{name}] 해당 주소('{addr}')로 브이월드 API 데이터 조회가 불가능합니다.\n조회가 되지 않는 주소이므로 신규 등록이 진행되지 않습니다."
+            )
+            return
+
+        if not any(p["label"] == name for p in self.logic.properties):
+            self.logic.properties.append(new_prop)
 
         if name not in self.active_labels:
             self.active_labels.append(name)
@@ -630,46 +691,62 @@ class ScientificCalculatorGUI(QMainWindow):
             logger.error(f"대시보드 갱신 에러: {e}")
 
     def update_table(self, pivot_df: pd.DataFrame):
-        """QTableWidget 데이터 표출"""
+        """QTableWidget 데이터 표출 (X, Y 축 전치: 열=연도, 행=부동산 및 합계/변동항목)"""
         if pivot_df.empty:
             self.tbl_price_history.setRowCount(0)
             self.tbl_price_history.setColumnCount(0)
             return
 
+        years = [int(y) for y in pivot_df.index]
         prop_labels = [p["label"] for p in self.logic.properties if p["label"] in pivot_df.columns]
-        headers = ["연도"] + prop_labels + ["Total (합계)", "전년대비 변동액", "변동률 (%)"]
 
-        self.tbl_price_history.setRowCount(len(pivot_df))
+        # 열(X축): ["부동산 / 항목"] + ["2020년", "2021년", ..., "2026년"]
+        headers = ["부동산 / 항목"] + [f"{y}년" for y in years]
+
+        # 행(Y축): 개별 부동산 목록 + Total + 변동액 + 변동률
+        row_items = prop_labels + ["Total (합계)", "전년대비 변동액", "변동률 (%)"]
+
+        self.tbl_price_history.setRowCount(len(row_items))
         self.tbl_price_history.setColumnCount(len(headers))
         self.tbl_price_history.setHorizontalHeaderLabels(headers)
 
-        for row_idx, (year, row) in enumerate(pivot_df.iterrows()):
-            # 1. 연도
-            item_year = QTableWidgetItem(f"{int(year)}년")
-            item_year.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item_year.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
-            self.tbl_price_history.setItem(row_idx, 0, item_year)
+        # 1. 0번째 열 (행 타이틀 - 부동산/항목 이름)
+        for row_idx, label in enumerate(row_items):
+            item_label = QTableWidgetItem(label)
+            is_special = label in ["Total (합계)", "전년대비 변동액", "변동률 (%)"]
+            item_label.setTextAlignment(Qt.AlignmentFlag.AlignCenter if is_special else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            item_label.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
+            if label == "Total (합계)":
+                item_label.setBackground(QColor("#E7F1FF"))
+            self.tbl_price_history.setItem(row_idx, 0, item_label)
 
-            # 2. 부동산별 공시가
-            for col_idx, label in enumerate(prop_labels, start=1):
-                price = row.get(label)
-                val_str = f"{int(price):,}원" if pd.notna(price) and price > 0 else "-"
+        # 2. 연도별 데이터 채우기 (열 col_idx = 1 ~ len(years))
+        for col_idx, year in enumerate(years, start=1):
+            year_row = pivot_df.loc[year]
+
+            # 2-1. 개별 부동산 공시가 행
+            for row_idx, prop_name in enumerate(prop_labels):
+                price = year_row.get(prop_name)
+                val_str = f"{price / 1e8:.2f}억" if pd.notna(price) and price > 0 else "-"
                 item_price = QTableWidgetItem(val_str)
                 item_price.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.tbl_price_history.setItem(row_idx, col_idx, item_price)
 
-            # 3. Total 합계
-            total_val = row.get("Total", 0)
-            item_total = QTableWidgetItem(f"{int(total_val):,}원" if pd.notna(total_val) and total_val > 0 else "-")
+            # 2-2. Total (합계) 행
+            total_row_idx = len(prop_labels)
+            total_val = year_row.get("Total", 0)
+            val_total_str = f"{total_val / 1e8:.2f}억" if pd.notna(total_val) and total_val > 0 else "-"
+            item_total = QTableWidgetItem(val_total_str)
             item_total.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             item_total.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
             item_total.setBackground(QColor("#E7F1FF"))
-            self.tbl_price_history.setItem(row_idx, len(prop_labels) + 1, item_total)
+            self.tbl_price_history.setItem(total_row_idx, col_idx, item_total)
 
-            # 4. 전년대비 변동액
-            diff_val = row.get("Total_Diff")
+            # 2-3. 전년대비 변동액 행
+            diff_row_idx = len(prop_labels) + 1
+            diff_val = year_row.get("Total_Diff")
             if pd.notna(diff_val):
-                diff_str = f"{int(diff_val):+,}원"
+                diff_str = f"{diff_val / 1e8:+.2f}억"
                 color_diff = QColor("#D63384") if diff_val > 0 else (QColor("#0D6EFD") if diff_val < 0 else QColor("#212529"))
             else:
                 diff_str = "-"
@@ -677,10 +754,11 @@ class ScientificCalculatorGUI(QMainWindow):
             item_diff = QTableWidgetItem(diff_str)
             item_diff.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             item_diff.setForeground(color_diff)
-            self.tbl_price_history.setItem(row_idx, len(prop_labels) + 2, item_diff)
+            self.tbl_price_history.setItem(diff_row_idx, col_idx, item_diff)
 
-            # 5. 변동률 (%)
-            rate_val = row.get("Total_Rate")
+            # 2-4. 변동률 (%) 행
+            rate_row_idx = len(prop_labels) + 2
+            rate_val = year_row.get("Total_Rate")
             if pd.notna(rate_val):
                 rate_str = f"{rate_val:+.1f}%"
                 color_rate = QColor("#DC3545") if rate_val > 0 else (QColor("#0D6EFD") if rate_val < 0 else QColor("#212529"))
@@ -691,7 +769,7 @@ class ScientificCalculatorGUI(QMainWindow):
             item_rate.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_rate.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
             item_rate.setForeground(color_rate)
-            self.tbl_price_history.setItem(row_idx, len(prop_labels) + 3, item_rate)
+            self.tbl_price_history.setItem(rate_row_idx, col_idx, item_rate)
 
     def update_chart(self, pivot_df: pd.DataFrame):
         """Matplotlib 연도별 그래프 표출"""

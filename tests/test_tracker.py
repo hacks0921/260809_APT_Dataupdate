@@ -8,9 +8,10 @@ import pandas as pd
 from app_gui import ScientificCalculatorLogic
 
 
-def test_history_loading_existing_file_returns_dataframe():
+def test_history_loading_existing_file_returns_dataframe(tmp_path):
     """기본 데이터 로드 시 2020년~2026년 공시가격 데이터가 로드되는지 검증합니다."""
-    logic = ScientificCalculatorLogic()
+    history_file = str(tmp_path / "test_history.csv")
+    logic = ScientificCalculatorLogic(history_path=history_file)
     df = logic.history_df
     assert not df.empty
     assert 'label' in df.columns
@@ -18,9 +19,10 @@ def test_history_loading_existing_file_returns_dataframe():
     assert 'price' in df.columns
 
 
-def test_pivot_table_calculation_returns_total_and_rates():
+def test_pivot_table_calculation_returns_total_and_rates(tmp_path):
     """피벗 테이블 연산 시 Total 합계 및 전년대비 변동률이 정확히 계산되는지 검증합니다."""
-    logic = ScientificCalculatorLogic()
+    history_file = str(tmp_path / "test_history.csv")
+    logic = ScientificCalculatorLogic(history_path=history_file)
     pivot = logic.get_pivot_table()
     assert not pivot.empty
     assert 'Total' in pivot.columns
@@ -28,17 +30,34 @@ def test_pivot_table_calculation_returns_total_and_rates():
     assert 'Total_Rate' in pivot.columns
 
 
-def test_fetch_property_custom_addition_creates_seven_years_data():
-    """신규 아파트 추가 시 2020년부터 2026년까지 7개 연도 데이터가 정상 생성되는지 검증합니다."""
-    logic = ScientificCalculatorLogic()
-    test_prop = {
-        "label": "테스트아파트",
-        "search_addr": "서울특별시 송파구 송파대로 345",
+def test_fetch_property_invalid_address_returns_zero(tmp_path):
+    """유효하지 않은 주소/PNU로 조회 시 가짜 데이터 생성 없이 0(실패)을 반환하는지 검증합니다."""
+    history_file = str(tmp_path / "test_history.csv")
+    logic = ScientificCalculatorLogic(history_path=history_file)
+    invalid_prop = {
+        "label": "가짜아파트",
+        "search_addr": "무효한주소 99999",
         "pnu": "",
-        "dongNm": "101",
-        "hoNm": "101"
+        "dongNm": "999",
+        "hoNm": "999"
     }
-    cnt = logic.fetch_all_years_for_property(test_prop, start_year=2020, end_year=2026)
-    assert cnt == 7
-    df_test = logic.history_df[logic.history_df["label"] == "테스트아파트"]
-    assert len(df_test) == 7
+    cnt = logic.fetch_all_years_for_property(invalid_prop, start_year=2020, end_year=2026)
+    assert cnt == 0
+    df_test = logic.history_df[logic.history_df["label"] == "가짜아파트"]
+    assert df_test.empty
+
+
+def test_remove_property_removes_from_list_and_history(tmp_path):
+    """부동산 삭제 시 logic.properties 및 history_df에서 정상 제거되는지 검증합니다."""
+    history_file = str(tmp_path / "test_history.csv")
+    logic = ScientificCalculatorLogic(history_path=history_file)
+    target_label = "광명역유플래닛데시앙"
+
+    initial_prop_count = len(logic.properties)
+    assert any(p["label"] == target_label for p in logic.properties)
+
+    success = logic.remove_property(target_label)
+    assert success is True
+    assert len(logic.properties) == initial_prop_count - 1
+    assert not any(p["label"] == target_label for p in logic.properties)
+    assert logic.history_df[logic.history_df["label"] == target_label].empty
