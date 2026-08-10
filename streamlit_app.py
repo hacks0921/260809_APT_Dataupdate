@@ -9,11 +9,8 @@ from datetime import datetime
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
+import koreanize_matplotlib
 import matplotlib.pyplot as plt
-try:
-    import koreanize_matplotlib
-except Exception:
-    pass
 import streamlit as st
 
 from logic import PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
