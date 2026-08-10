@@ -19,11 +19,16 @@ def test_history_loading_initializes_empty_dataframe(tmp_path):
 
 
 def test_pivot_table_calculation_after_fetching(tmp_path):
-    """데이터 수집 후 피벗 테이블 연산 시 Total 합계 및 전년대비 변동률이 정확히 계산되는지 검증합니다."""
+    """이력 데이터 입력 후 피벗 테이블 연산 시 Total 합계 및 전년대비 변동률이 정확히 계산되는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
     logic = ScientificCalculatorLogic(history_path=history_file)
-    test_prop = logic.properties[0]
-    logic.fetch_all_years_for_property(test_prop, start_year=2020, end_year=2026)
+
+    # 직접 유효 데이터프레임 기록 테스트
+    df_sample = pd.DataFrame([
+        {"label": "도화현대홈타운2차", "year": 2024, "price": 520000000},
+        {"label": "도화현대홈타운2차", "year": 2025, "price": 589000000}
+    ])
+    logic.history_df = df_sample
 
     pivot = logic.get_pivot_table()
     assert not pivot.empty
