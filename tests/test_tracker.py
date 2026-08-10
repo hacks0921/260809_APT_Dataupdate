@@ -5,7 +5,7 @@
 
 import pytest
 import pandas as pd
-from logic import ScientificCalculatorLogic
+from app_gui import ScientificCalculatorLogic
 
 
 def test_history_loading_initializes_empty_dataframe(tmp_path):
