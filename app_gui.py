@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
 from logic import (
-    PROPERTIES_DEFAULT, REAL_HOUSING_PRICES, ScientificCalculatorLogic, logger
+    PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
 )
 
 # 한글 폰트 및 마이너스 깨짐 방지

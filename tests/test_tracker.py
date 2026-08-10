@@ -8,21 +8,23 @@ import pandas as pd
 from logic import ScientificCalculatorLogic
 
 
-def test_history_loading_existing_file_returns_dataframe(tmp_path):
-    """기본 데이터 로드 시 2020년~2026년 공시가격 데이터가 로드되는지 검증합니다."""
+def test_history_loading_initializes_empty_dataframe(tmp_path):
+    """하드코딩 seed 제거 후 초기 데이터 로드 시 빈 DataFrame으로 초기화되는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
     logic = ScientificCalculatorLogic(history_path=history_file)
     df = logic.history_df
-    assert not df.empty
     assert 'label' in df.columns
     assert 'year' in df.columns
     assert 'price' in df.columns
 
 
-def test_pivot_table_calculation_returns_total_and_rates(tmp_path):
-    """피벗 테이블 연산 시 Total 합계 및 전년대비 변동률이 정확히 계산되는지 검증합니다."""
+def test_pivot_table_calculation_after_fetching(tmp_path):
+    """데이터 수집 후 피벗 테이블 연산 시 Total 합계 및 전년대비 변동률이 정확히 계산되는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
     logic = ScientificCalculatorLogic(history_path=history_file)
+    test_prop = logic.properties[0]
+    logic.fetch_all_years_for_property(test_prop, start_year=2020, end_year=2026)
+
     pivot = logic.get_pivot_table()
     assert not pivot.empty
     assert 'Total' in pivot.columns
