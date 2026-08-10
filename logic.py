@@ -196,16 +196,8 @@ class ScientificCalculatorLogic:
             if api_price and api_price > 0:
                 new_rows.append({"label": label, "year": year, "price": api_price})
 
-        # PNU가 정상 확인된 주택의 경우 지번공시가속성 기반 연도별 수집
-        if not new_rows and pnu:
-            for year in range(start_year, end_year + 1):
-                base_calc = (int(pnu[-6:]) % 50000 + 15000) * 10000
-                year_coef = 0.85 + (year - 2020) * 0.06
-                price_val = int(base_calc * year_coef // 10000) * 10000
-                new_rows.append({"label": label, "year": year, "price": price_val})
-
         if not new_rows:
-            logger.warning(f"🔴 [{label}] 연도별 공시가격 API 수집에 실패했습니다.")
+            logger.warning(f"🔴 [{label}] 연도별 공시가격 API 수집 실패 (실제 API 응답 데이터 없음).")
             return 0
 
         df_new = pd.DataFrame(new_rows)
