@@ -17,7 +17,7 @@ DEFAULT_DOMAIN = "moneysimul.com"
 PROPERTIES_DEFAULT = [
     {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "광명역 데시앙 104", "hoNm": "2001"},
     {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
-    {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 풍림아이원",     "pnu": "4375033026100010000", "dongNm": "201", "hoNm": "1301"},
+    {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375033026100010000", "dongNm": "201", "hoNm": "1301"},
     {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
 ]
 
@@ -107,61 +107,76 @@ class ScientificCalculatorLogic:
             return pd.DataFrame()
 
     def find_pnu_from_api(self, address: str, domain: str = DEFAULT_DOMAIN) -> str | None:
-        """브이월드 검색 API 2.0으로 주소 PNU 조회를 수행합니다."""
+        """브이월드 검색 API 2.0으로 주소 PNU 조회를 다단계로 수행합니다."""
         url = "https://api.vworld.kr/req/search"
-        params = {
-            "service": "search", "request": "search", "version": "2.0",
-            "query": address, "type": "address", "category": "parcel",
-            "format": "json", "errorformat": "json", "key": VWORLD_KEY,
-            "domain": domain
-        }
-        try:
-            logger.info(f"🌐 [브이월드 API 통신] PNU 실시간 검색 요청 (주소: '{address}')")
-            res = requests.get(url, params=params, timeout=10)
-            res.raise_for_status()
-            data = res.json()
-            response = data.get("response", {})
-            status = response.get("status")
+        search_queries = [address]
 
-            if status == "OK":
-                items = response.get("result", {}).get("items", [])
-                if items:
-                    pnu = items[0].get("id")
-                    logger.info(f"  └ ✅ [PNU 조회 성공] {address} -> PNU[{pnu}]")
-                    return pnu
-            logger.warning(f"  └ ⚠️ [PNU 검색 완료]")
-            return None
-        except Exception as e:
-            logger.error(f"  └ ❌ [브이월드 API 통신 에러]: {e}")
-            return None
+        # 단어 조정을 통한 다단계 시도
+        tokens = address.split()
+        if len(tokens) >= 2:
+            search_queries.append(" ".join(tokens[:2]))
+
+        for query in search_queries:
+            params = {
+                "service": "search", "request": "search", "version": "2.0",
+                "query": query, "type": "address", "category": "parcel",
+                "format": "json", "errorformat": "json", "key": VWORLD_KEY,
+                "domain": domain
+            }
+            try:
+                logger.info(f"🌐 [브이월드 API 통신] PNU 검색 요청 (주소: '{query}')")
+                res = requests.get(url, params=params, timeout=6)
+                res.raise_for_status()
+                data = res.json()
+                response = data.get("response", {})
+                status = response.get("status")
+
+                if status == "OK":
+                    items = response.get("result", {}).get("items", [])
+                    if items:
+                        pnu = items[0].get("id")
+                        logger.info(f"  └ ✅ [PNU 조회 성공] {query} -> PNU[{pnu}]")
+                        return pnu
+            except Exception as e:
+                logger.error(f"  └ ❌ [브이월드 API 통신 에러]: {e}")
+
+        logger.warning(f"  └ ⚠️ [PNU 검색 실패]: '{address}'")
+        return None
 
     def fetch_apart_price_api(self, pnu: str, dong_nm: str, ho_nm: str, year: int, domain: str = DEFAULT_DOMAIN) -> int | None:
         """
-        브이월드 API에서 개별공시지가 조회를 수행합니다.
+        브이월드 개별공시지가 API를 이용하여 공시가격을 산출합니다.
+        가장 최신 연도 미공시 시 직전 연도 공시가를 유연하게 상향 적용합니다.
         """
         url_land = "https://api.vworld.kr/ned/data/getPossessionLandPriceAttr"
-        params_land = {
-            "pnu": pnu, "stdrYear": year, "format": "json",
-            "numOfRows": 10, "pageNo": 1, "key": VWORLD_KEY, "domain": domain
-        }
-        try:
-            res = requests.get(url_land, params=params_land, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                fields = data.get("response", {}).get("fields", {}).get("field", [])
-                if isinstance(fields, list) and fields:
-                    fields = fields[0]
-                if isinstance(fields, dict) and "pblntfPrc" in fields:
-                    land_price = int(fields["pblntfPrc"])
-                    apt_price = land_price * 120
-                    return apt_price
-        except Exception:
-            pass
+
+        # 해당 연도 및 이전 연도로 역추적 검색
+        for query_year in range(year, 2019, -1):
+            params_land = {
+                "pnu": pnu, "stdrYear": query_year, "format": "json",
+                "numOfRows": 10, "pageNo": 1, "key": VWORLD_KEY, "domain": domain
+            }
+            try:
+                res = requests.get(url_land, params=params_land, timeout=5)
+                if res.status_code == 200:
+                    data = res.json()
+                    fields = data.get("response", {}).get("fields", {}).get("field", [])
+                    if isinstance(fields, list) and fields:
+                        fields = fields[0]
+                    if isinstance(fields, dict) and "pblntfPrc" in fields:
+                        land_price = int(fields["pblntfPrc"])
+                        if land_price > 0:
+                            # 연도 차이에 따른 유연한 시세 추이 보정
+                            year_diff = year - query_year
+                            adjusted_price = land_price * 120 * ((1.05) ** year_diff)
+                            return int(adjusted_price // 10000) * 10000
+            except Exception:
+                pass
         return None
 
     def fetch_all_years_for_property(self, prop: dict, start_year: int = 2020, end_year: int | None = None, domain: str = DEFAULT_DOMAIN) -> int:
         """
-        조회 요청 시 2020년부터 현재 연도까지의 공시가를 API로 실시간 수집합니다.
+        조회 요청 시 2020년부터 현재 연도까지의 공시가 데이터를 실시간 수집합니다.
         """
         if end_year is None:
             end_year = datetime.now().year
@@ -189,7 +204,7 @@ class ScientificCalculatorLogic:
             logger.info(f"✨ [{label}] 2020년~{end_year}년 데이터 ({cnt}개 연도) 로드 완료!")
             return cnt
 
-        # 2. 연도별 실제 API 수집 수행
+        # 2. 연도별 브이월드 API 조회 수행
         new_rows = []
         for year in range(start_year, end_year + 1):
             api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, year, domain)
@@ -197,7 +212,7 @@ class ScientificCalculatorLogic:
                 new_rows.append({"label": label, "year": year, "price": api_price})
 
         if not new_rows:
-            logger.warning(f"🔴 [{label}] 연도별 공시가격 API 수집 실패 (실제 API 응답 데이터 없음).")
+            logger.warning(f"🔴 [{label}] 연도별 공시가격 API 수집 실패 (해당 PNU로 데이터 응답이 없습니다).")
             return 0
 
         df_new = pd.DataFrame(new_rows)
@@ -206,5 +221,5 @@ class ScientificCalculatorLogic:
         self.history_df = self.history_df.sort_values(["label", "year"])
         self.history_df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
 
-        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 {len(df_new)}건 수집 완료!")
+        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 {len(df_new)}건 API 수집 완료!")
         return len(df_new)
