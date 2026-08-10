@@ -6,16 +6,33 @@
 import sys
 import logging
 from datetime import datetime
+import os
+import requests
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
-import koreanize_matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import streamlit as st
 
 from logic import PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
 
-# 한글 폰트 설정
+# 리눅스/클라우드 환경용 한글 나눔고딕 폰트 자동 로드
+font_path = "NanumGothic.ttf"
+if not os.path.exists(font_path):
+    try:
+        font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
+        res = requests.get(font_url, timeout=5)
+        if res.status_code == 200:
+            with open(font_path, "wb") as f:
+                f.write(res.content)
+    except Exception as e:
+        logger.warning(f"한글 폰트 다운로드 예외: {e}")
+
+if os.path.exists(font_path):
+    fm.fontManager.addfont(font_path)
+    plt.rcParams['font.family'] = 'NanumGothic'
+
 plt.rcParams['axes.unicode_minus'] = False
 
 st.set_page_config(
