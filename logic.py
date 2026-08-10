@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-아파트 공시지가 및 Total 금액 연도별 변동 비즈니스 로직 모듈 (UI 독립)
+아파트 공시지가 및 Total 금액 연도별 변동 비즈니스 로직 모듈 (실제 API 조회)
 """
 
 import logging
@@ -15,7 +15,7 @@ HISTORY_PATH = "my_properties_history.csv"
 DEFAULT_DOMAIN = "moneysimul.com"
 
 PROPERTIES_DEFAULT = [
-    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "광명역 데시앙 104동", "hoNm": "2001"},
+    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2001"},
     {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
     {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375033026100010000", "dongNm": "201", "hoNm": "1301"},
     {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
@@ -107,12 +107,13 @@ class ScientificCalculatorLogic:
             return pd.DataFrame()
 
     def find_pnu_from_api(self, address: str, domain: str = DEFAULT_DOMAIN) -> str | None:
-        """브이월드 검색 API 2.0으로 주소 PNU 조회를 수행합니다."""
+        """브이월드 검색 API 2.0으로 주소 PNU 조회를 다단계로 수행합니다."""
         url = "https://api.vworld.kr/req/search"
         search_queries = [address]
         tokens = address.split()
         if len(tokens) >= 2:
             search_queries.append(" ".join(tokens[:2]))
+            search_queries.append(" ".join(tokens[-2:]))
 
         for query in search_queries:
             params = {
@@ -143,31 +144,39 @@ class ScientificCalculatorLogic:
 
     def fetch_apart_price_api(self, pnu: str, dong_nm: str, ho_nm: str, year: int, domain: str = DEFAULT_DOMAIN) -> int | None:
         """
-        브이월드 개별공시지가 API를 시도하고, 응답이 있으면 실제 값을 리턴합니다.
+        브이월드 API에서 실제 개별공시지가 데이터를 조회합니다.
+        지정 연도 데이터가 미공시 상태일 경우 직전 연도의 실공시가를 조회하여 반영합니다.
         """
         url_land = "https://api.vworld.kr/ned/data/getPossessionLandPriceAttr"
-        params_land = {
-            "pnu": pnu, "stdrYear": year, "format": "json",
-            "numOfRows": 10, "pageNo": 1, "key": VWORLD_KEY, "domain": domain
-        }
-        try:
-            res = requests.get(url_land, params=params_land, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                fields = data.get("response", {}).get("fields", {}).get("field", [])
-                if isinstance(fields, list) and fields:
-                    fields = fields[0]
-                if isinstance(fields, dict) and "pblntfPrc" in fields:
-                    land_price = int(fields["pblntfPrc"])
-                    if land_price > 0:
-                        return land_price * 120
-        except Exception:
-            pass
+
+        # 지정 연도부터 과거 연도로 탐색하여 가장 최근의 실제 공시가격 조회
+        for query_year in range(year, 2019, -1):
+            params_land = {
+                "pnu": pnu, "stdrYear": query_year, "format": "json",
+                "numOfRows": 10, "pageNo": 1, "key": VWORLD_KEY, "domain": domain
+            }
+            try:
+                res = requests.get(url_land, params_land, timeout=5)
+                if res.status_code == 200:
+                    data = res.json()
+                    fields = data.get("response", {}).get("fields", {}).get("field", [])
+                    if isinstance(fields, list) and fields:
+                        fields = fields[0]
+                    if isinstance(fields, dict) and "pblntfPrc" in fields:
+                        land_price = fields.get("pblntfPrc")
+                        if land_price is not None and str(land_price).isdigit():
+                            val = int(land_price)
+                            if val > 0:
+                                # 아파트 대지지분/전용면적 환산 (지번 공시가 * 120)
+                                apt_price = val * 120
+                                return apt_price
+            except Exception:
+                pass
         return None
 
     def fetch_all_years_for_property(self, prop: dict, start_year: int = 2020, end_year: int | None = None, domain: str = DEFAULT_DOMAIN) -> int:
         """
-        [⚡ 데이터 조회] 클릭 시 2020년~현재 연도 공시가 변동 추이를 수집/산출합니다.
+        [⚡ 데이터 조회] 클릭 시 2020년~현재 연도 공시가를 실제 브이월드 API에서 수집합니다.
         """
         if end_year is None:
             end_year = datetime.now().year
@@ -186,56 +195,30 @@ class ScientificCalculatorLogic:
                 return 0
 
         logger.info(f"==================================================")
-        logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 공시가 데이터 조회 시작...")
+        logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 실제 브이월드 API 공시가 수집 시작...")
 
-        # 1. 기존 데이터 존재 확인
+        # 1. 기존 수집 이력 확인
         existing_rows = self.history_df[self.history_df["label"] == label]
         if not existing_rows.empty and len(existing_rows) >= (end_year - start_year + 1):
             cnt = len(existing_rows)
             logger.info(f"✨ [{label}] 2020년~{end_year}년 데이터 ({cnt}개 연도) 로드 완료!")
             return cnt
 
-        # 2. 부동산 기본 시세 베이스 설정 (부동산별 특성 반영)
-        base_price = 250000000
-        if "광명" in label or "데시앙" in label:
-            base_price = 750000000
-        elif "도화" in label:
-            base_price = 520000000
-        elif "진천" in label or "풍림" in label:
-            base_price = 140000000
-        elif "월피" in label:
-            base_price = 165000000
-        else:
-            if pnu:
-                api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, 2024, domain)
-                if api_price and api_price > 50000000:
-                    base_price = api_price
-
-        # 대한민국 2020년~2026년 공시가격 변동률 계수 패턴
-        # 2020(0.85) -> 2021(1.05) -> 2022(1.20) -> 2023(0.90) -> 2024(1.00) -> 2025(1.08) -> 2026(1.18)
-        trend_ratios = {
-            2020: 0.85,
-            2021: 1.05,
-            2022: 1.20,
-            2023: 0.90,
-            2024: 1.00,
-            2025: 1.08,
-            2026: 1.18
-        }
-
+        # 2. 브이월드 API 실데이터 수집
         new_rows = []
+        last_valid_price = None
+
         for year in range(start_year, end_year + 1):
             api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, year, domain)
-            if api_price and api_price > 50000000:
-                price_val = api_price
-            else:
-                ratio = trend_ratios.get(year, 1.0)
-                price_val = int(base_price * ratio // 10000) * 10000
-
-            new_rows.append({"label": label, "year": year, "price": price_val})
+            if api_price and api_price > 0:
+                last_valid_price = api_price
+                new_rows.append({"label": label, "year": year, "price": api_price})
+            elif last_valid_price is not None:
+                # 2024년 이전 데이터가 있고 2025/2026 미공시 시 가장 최신의 실공시가로 연장
+                new_rows.append({"label": label, "year": year, "price": last_valid_price})
 
         if not new_rows:
-            logger.warning(f"🔴 [{label}] 연도별 공시가격 데이터 산출 실패.")
+            logger.warning(f"🔴 [{label}] 연도별 공시가격 실제 API 조회 실패 (해당 PNU로 데이터 응답이 없습니다).")
             return 0
 
         df_new = pd.DataFrame(new_rows)
@@ -244,5 +227,5 @@ class ScientificCalculatorLogic:
         self.history_df = self.history_df.sort_values(["label", "year"])
         self.history_df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
 
-        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 {len(df_new)}건 수집/산출 완료!")
+        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 {len(df_new)}건 실제 API 수집 완료!")
         return len(df_new)
