@@ -10,16 +10,16 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+try:
+    import koreanize_matplotlib
+except Exception:
+    pass
 import streamlit as st
 
 from logic import PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
 
 # 한글 폰트 설정
 plt.rcParams['axes.unicode_minus'] = False
-try:
-    plt.rcParams['font.family'] = 'NanumGothic'
-except Exception:
-    pass
 
 st.set_page_config(
     page_title="아파트 공시지가 연도별 변동 분석 시스템",
@@ -50,7 +50,9 @@ for idx, prop in enumerate(logic.properties):
     with cols[idx % len(cols)]:
         with st.container(border=True):
             st.markdown(f"### 🏢 {prop['label']}")
-            st.write(f"**동/호수:** {prop['dongNm']}동 {prop['hoNm']}호")
+            dong_str = f"{prop['dongNm']}" if str(prop['dongNm']).endswith("동") else f"{prop['dongNm']}동"
+            ho_str = f"{prop['hoNm']}" if str(prop['hoNm']).endswith("호") else f"{prop['hoNm']}호"
+            st.write(f"**동/호수:** {dong_str} {ho_str}")
             st.write(f"📍 {prop['search_addr']}")
             pnu_txt = prop['pnu'] if prop['pnu'] else 'PNU 검색 필요'
             st.caption(f"🔑 PNU: {pnu_txt}")
