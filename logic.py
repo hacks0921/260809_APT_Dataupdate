@@ -26,7 +26,7 @@ DEFAULT_DOMAIN = os.getenv("DEFAULT_DOMAIN", "moneysimul.com")
 PROPERTIES_DEFAULT = [
     {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2001"},
     {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
-    {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375033026100010000", "dongNm": "201", "hoNm": "1301"},
+    {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375035025107530000", "dongNm": "201", "hoNm": "1301"},
     {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
 ]
 
