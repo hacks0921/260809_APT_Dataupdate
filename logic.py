@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-아파트 공시지가 및 Total 금액 연도별 변동 비즈니스 로직 모듈 (브이월드 API 전수 실시간 수집)
+아파트 공시지가 및 Total 금액 연도별 변동 비즈니스 로직 모듈 (브이월드 API 전수 실시간 수집 - 고속 최적화)
 """
 
 import os
@@ -135,8 +135,7 @@ class ApartmentPriceLogic:
                     "domain": domain
                 }
                 try:
-                    logger.info(f"🌐 [API 통신] 브이월드 PNU 검색 요청 | 주소: '{query}' (카테고리: {category})")
-                    res = requests.get(url, params=params, timeout=5)
+                    res = requests.get(url, params=params, timeout=3)
                     res.raise_for_status()
                     data = res.json()
                     response = data.get("response", {})
@@ -158,42 +157,39 @@ class ApartmentPriceLogic:
 
     def fetch_apart_price_api(self, pnu: str, dong_nm: str, ho_nm: str, year: int, domain: str = DEFAULT_DOMAIN) -> int | None:
         """
-        브이월드 API에서 2단계 전략으로 실공시가를 수집합니다.
-        1차: getApartHousingPriceAttr (공동주택가격속성조회 다중페이지)
+        브이월드 API에서 고속 단일 요청(numOfRows=1000)으로 실공시가를 수집합니다.
+        1차: getApartHousingPriceAttr (공동주택가격속성조회)
         2차: getLandCharacteristics (토지특성 개별공시지가 * 대지지분 120 환산)
         """
         api_key = os.getenv("VWORLD_KEY", VWORLD_KEY)
         pnu_base = pnu[:-4] + "0000" if len(pnu) == 19 else pnu
 
-        # 1. 공동주택가격 API 시도 (페이지 1~10 다중 탐색)
+        # 1. 공동주택가격 API 고속 조회 (numOfRows=1000 단 1회 조기반환)
         url_apt = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
         for query_pnu in [pnu, pnu_base]:
-            for page in range(1, 10):
-                params_apt = {
-                    "pnu": query_pnu, "stdrYear": str(year), "format": "json",
-                    "numOfRows": 100, "pageNo": page, "key": api_key, "domain": domain
-                }
-                try:
-                    res = requests.get(url_apt, params=params_apt, timeout=4)
-                    if res.status_code == 200:
-                        data = res.json()
-                        fields = data.get("apartHousingPrices", {}).get("field", [])
-                        if not fields:
-                            break
-                        if isinstance(fields, dict):
-                            fields = [fields]
+            params_apt = {
+                "pnu": query_pnu, "stdrYear": str(year), "format": "json",
+                "numOfRows": 1000, "pageNo": 1, "key": api_key, "domain": domain
+            }
+            try:
+                res = requests.get(url_apt, params=params_apt, timeout=3)
+                if res.status_code == 200:
+                    data = res.json()
+                    fields = data.get("apartHousingPrices", {}).get("field", [])
+                    if isinstance(fields, dict):
+                        fields = [fields]
 
-                        # 동/호수 일치 여부 확인 (동 부분 포함 & 호 정확 매칭)
-                        for f in fields:
-                            f_dong = str(f.get("dongNm", "")).strip()
-                            f_ho = str(f.get("hoNm", "")).strip()
-                            if str(dong_nm).strip() in f_dong and f_ho == str(ho_nm).strip():
-                                if f.get("pblntfPc") and str(f.get("pblntfPc")).isdigit():
-                                    val = int(f.get("pblntfPc"))
-                                    logger.info(f"  └ 🟢 [공동주택가격(동호수매칭) 수집 성공] PNU: {query_pnu} | 연도: {year}년 | 동/호: {dong_nm}동 {ho_nm}호 -> 공시가: {val:,}원")
-                                    return val
-                except Exception as e:
-                    logger.debug(f"  └ [공동주택가격 API 탐색 중] PNU: {query_pnu}, page: {page}, 사유: {e}")
+                    # 동/호수 일치 여부 확인 (동 부분 포함 & 호 정확 매칭)
+                    for f in fields:
+                        f_dong = str(f.get("dongNm", "")).strip()
+                        f_ho = str(f.get("hoNm", "")).strip()
+                        if str(dong_nm).strip() in f_dong and f_ho == str(ho_nm).strip():
+                            if f.get("pblntfPc") and str(f.get("pblntfPc")).isdigit():
+                                val = int(f.get("pblntfPc"))
+                                logger.info(f"  └ 🟢 [공동주택가격(동호수매칭) 수집 성공] PNU: {query_pnu} | 연도: {year}년 | 동/호: {dong_nm}동 {ho_nm}호 -> 공시가: {val:,}원")
+                                return val
+            except Exception as e:
+                logger.debug(f"  └ [공동주택가격 API 탐색 중] PNU: {query_pnu}, 사유: {e}")
 
         # 2. 토지특성 개별공시지가 API 2차 시도 (대지지분 120m² 환산)
         url_land = "https://api.vworld.kr/ned/data/getLandCharacteristics"
@@ -203,7 +199,7 @@ class ApartmentPriceLogic:
                 "numOfRows": 10, "pageNo": 1, "key": api_key, "domain": domain
             }
             try:
-                res = requests.get(url_land, params=params_land, timeout=4)
+                res = requests.get(url_land, params=params_land, timeout=3)
                 if res.status_code == 200:
                     data = res.json()
                     fields_land = data.get("landCharacteristicss", {}).get("field", [])
@@ -223,8 +219,7 @@ class ApartmentPriceLogic:
 
     def fetch_all_years_for_property(self, prop: dict, start_year: int = 2020, end_year: int | None = None, domain: str = DEFAULT_DOMAIN) -> int:
         """
-        등록된 부동산 주소에 대해 2020년부터 현재 연도까지의 공시가를 브이월드 API에서 전수 수집합니다.
-        지정 주소/PNU/동/호수가 재조회될 경우 최신 API 데이터로 항상 갱신합니다.
+        등록된 부동산 주소에 대해 2020년부터 현재 연도까지의 공시가를 브이월드 API에서 고속 전수 수집합니다.
         """
         if end_year is None:
             end_year = datetime.now().year
@@ -246,7 +241,6 @@ class ApartmentPriceLogic:
         logger.info(f"==================================================")
         logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 실제 브이월드 API 공시가 수집 개시...")
 
-        # 연도별 브이월드 API 수집 진행
         prices_by_year = {}
         for year in range(start_year, end_year + 1):
             api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, year, domain)
@@ -271,7 +265,6 @@ class ApartmentPriceLogic:
             price_val = prices_by_year[year]
             if price_val is None or price_val == 0:
                 if year < first_valid_year:
-                    # 건설 전 미공시 연도는 최초 공시가격으로 보정
                     logger.info(f"  └ ℹ️ [{label}] {year}년 건설 전 미공시 상태로 최초 공시가({first_valid_price:,}원) 보정 적용")
                     new_rows.append({"label": label, "year": year, "price": first_valid_price})
                 else:
@@ -282,7 +275,6 @@ class ApartmentPriceLogic:
                 new_rows.append({"label": label, "year": year, "price": price_val})
 
         df_new = pd.DataFrame(new_rows)
-        # 기존 특정 label의 데이터가 있는 경우 갱신
         if not self.history_df.empty and 'label' in self.history_df.columns:
             self.history_df = self.history_df[self.history_df["label"] != label]
 
