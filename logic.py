@@ -25,7 +25,7 @@ DEFAULT_DOMAIN = os.getenv("DEFAULT_DOMAIN", "moneysimul.com")
 
 PROPERTIES_DEFAULT = [
     {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2101"},
-    {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
+    {"label": "도화현대홈타운",         "search_addr": "서울특별시 마포구 새창로8길 72", "pnu": "1144010400103530000", "dongNm": "207", "hoNm": "405"},
     {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375035025107530000", "dongNm": "201", "hoNm": "1301"},
     {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
 ]
@@ -159,45 +159,41 @@ class ApartmentPriceLogic:
     def fetch_apart_price_api(self, pnu: str, dong_nm: str, ho_nm: str, year: int, domain: str = DEFAULT_DOMAIN) -> int | None:
         """
         브이월드 API에서 2단계 전략으로 실공시가를 수집합니다.
-        1차: getApartHousingPriceAttr (공동주택가격속성조회)
+        1차: getApartHousingPriceAttr (공동주택가격속성조회 다중페이지)
         2차: getLandCharacteristics (토지특성 개별공시지가 * 대지지분 120 환산)
         """
         api_key = os.getenv("VWORLD_KEY", VWORLD_KEY)
         pnu_base = pnu[:-4] + "0000" if len(pnu) == 19 else pnu
 
-        # 1. 공동주택가격 API 시도
+        # 1. 공동주택가격 API 시도 (페이지 1~10 다중 탐색)
         url_apt = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
         for query_pnu in [pnu, pnu_base]:
-            params_apt = {
-                "pnu": query_pnu, "stdrYear": str(year), "format": "json",
-                "numOfRows": 100, "pageNo": 1, "key": api_key, "domain": domain
-            }
-            try:
-                res = requests.get(url_apt, params=params_apt, timeout=4)
-                if res.status_code == 200:
-                    data = res.json()
-                    fields = data.get("apartHousingPrices", {}).get("field", [])
-                    if isinstance(fields, dict):
-                        fields = [fields]
+            for page in range(1, 10):
+                params_apt = {
+                    "pnu": query_pnu, "stdrYear": str(year), "format": "json",
+                    "numOfRows": 100, "pageNo": page, "key": api_key, "domain": domain
+                }
+                try:
+                    res = requests.get(url_apt, params=params_apt, timeout=4)
+                    if res.status_code == 200:
+                        data = res.json()
+                        fields = data.get("apartHousingPrices", {}).get("field", [])
+                        if not fields:
+                            break
+                        if isinstance(fields, dict):
+                            fields = [fields]
 
-                    # 동/호수 일치 여부 확인
-                    for f in fields:
-                        f_dong = str(f.get("dongNm", "")).strip()
-                        f_ho = str(f.get("hoNm", "")).strip()
-                        if str(dong_nm).strip() in f_dong and f_ho == str(ho_nm).strip():
-                            if f.get("pblntfPc") and str(f.get("pblntfPc")).isdigit():
-                                val = int(f.get("pblntfPc"))
-                                logger.info(f"  └ 🟢 [공동주택가격(동호수매칭) 수집 성공] PNU: {query_pnu} | 연도: {year}년 | 동/호: {dong_nm}동 {ho_nm}호 -> 공시가: {val:,}원")
-                                return val
-
-                    # 동/호수 exact match 없으나 단지 공시가가 존재하는 경우
-                    for f in fields:
-                        if f.get("pblntfPc") and str(f.get("pblntfPc")).isdigit():
-                            val = int(f.get("pblntfPc"))
-                            logger.info(f"  └ 🟢 [공동주택가격(단지대표) 수집 성공] PNU: {query_pnu} | 연도: {year}년 -> 공시가: {val:,}원")
-                            return val
-            except Exception as e:
-                logger.debug(f"  └ [공동주택가격 API 탐색 중] PNU: {query_pnu}, 사유: {e}")
+                        # 동/호수 일치 여부 확인 (동 부분 포함 & 호 정확 매칭)
+                        for f in fields:
+                            f_dong = str(f.get("dongNm", "")).strip()
+                            f_ho = str(f.get("hoNm", "")).strip()
+                            if str(dong_nm).strip() in f_dong and f_ho == str(ho_nm).strip():
+                                if f.get("pblntfPc") and str(f.get("pblntfPc")).isdigit():
+                                    val = int(f.get("pblntfPc"))
+                                    logger.info(f"  └ 🟢 [공동주택가격(동호수매칭) 수집 성공] PNU: {query_pnu} | 연도: {year}년 | 동/호: {dong_nm}동 {ho_nm}호 -> 공시가: {val:,}원")
+                                    return val
+                except Exception as e:
+                    logger.debug(f"  └ [공동주택가격 API 탐색 중] PNU: {query_pnu}, page: {page}, 사유: {e}")
 
         # 2. 토지특성 개별공시지가 API 2차 시도 (대지지분 120m² 환산)
         url_land = "https://api.vworld.kr/ned/data/getLandCharacteristics"
