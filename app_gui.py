@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-아파트 공시지가 및 Total 금액 연도별 변동 조회 GUI 애플리케이션
+아파트 공시지가 및 Total 금액 연도별 변동 조회 GUI 애플리케이션 (실제 API 수집 전용)
 
-누구든지 새로운 아파트 주소를 입력하면 자동으로 2020년부터 현재 연도(2026년)까지의
-공시가격 변동 추이 데이터를 생성/수집하여 테이블과 차트에 100% 업데이트합니다.
+새로운 아파트 주소를 입력하거나 등록된 집의 '⚡ 데이터 조회' 버튼을 클릭하면
+국토부/브이월드 API를 통해 2020년부터 현재 연도까지의 공시가 실데이터를 자동 수집하여
+테이블과 차트에 실시간으로 표출합니다.
 """
 
 import sys
 import logging
 from pathlib import Path
 from datetime import datetime
-import requests
 import pandas as pd
 import matplotlib
 matplotlib.use('QtAgg')
@@ -27,29 +27,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor
 
+# 비즈니스 로직 모듈 불러오기 (Single Source of Truth)
+from logic import ApartmentPriceLogic, PROPERTIES_DEFAULT, logger, HISTORY_PATH
+
 # 한글 폰트 및 마이너스 깨짐 방지
 plt.rcParams['font.family'] = 'Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] = False
-
-# ── 상수 및 기본 설정 ──────────────────────────────────────────
-VWORLD_KEY = "40302477-58D7-3DF4-A0C8-AF4A9609A41C"
-HISTORY_PATH = "my_properties_history.csv"
-DEFAULT_DOMAIN = "moneysimul.com"
-
-PROPERTIES_DEFAULT = [
-    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2001"},
-    {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
-    {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375033026100010000", "dongNm": "201", "hoNm": "1301"},
-    {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
-]
-
-# 기본 아파트 연도별 공식 공시가격 데이터베이스
-REAL_HOUSING_PRICES = {
-    "광명역유플래닛데시앙": {2020: 812000000, 2021: 993000000, 2022: 1054000000, 2023: 636000000, 2024: 750000000, 2025: 835000000, 2026: 968000000},
-    "도화현대홈타운2차":     {2020: 462000000, 2021: 588000000, 2022: 664000000, 2023: 484000000, 2024: 520000000, 2025: 589000000, 2026: 735000000},
-    "진천 풍림아이원":       {2024: 140000000, 2025: 143000000, 2026: 146000000},
-    "월피주공1단지":         {2020: 94500000, 2021: 151000000, 2022: 244000000, 2023: 182000000, 2024: 165000000, 2025: 158000000, 2026: 142000000},
-}
 
 
 # ── 커스텀 GUI 로그 핸들러 ────────────────────────────────────
@@ -68,221 +51,25 @@ class QTextEditLogger(logging.Handler):
         self.signals.log_signal.emit(msg)
 
 
-# 로깅 설정
-logger = logging.getLogger("ApartmentPriceTracker")
-logger.setLevel(logging.INFO)
-
-# 콘솔 핸들러
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', '%H:%M:%S'))
-logger.addHandler(console_handler)
-
-# GUI 로거 핸들러
+# GUI 전용 로거 핸들러 등록
 gui_log_handler = QTextEditLogger()
-gui_log_handler.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', '%H:%M:%S'))
+gui_log_handler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', '%H:%M:%S'))
 logger.addHandler(gui_log_handler)
 
 
-# ── 비즈니스 로직 클래스 ───────────────────────────────────────
-class ScientificCalculatorLogic:
-    """비즈니스 로직 및 국토교통부/브이월드 공시가 데이터 관리 클래스"""
-
-    def __init__(self, history_path: str = HISTORY_PATH):
-        self.history_path = Path(history_path)
-        self.properties = [dict(p) for p in PROPERTIES_DEFAULT]
-        self.history_df = self.load_or_create_history()
-
-    def load_or_create_history(self) -> pd.DataFrame:
-        """이력 데이터베이스를 로드하고 기본 주택 데이터로 초기화합니다."""
-        try:
-            if self.history_path.exists():
-                df = pd.read_csv(self.history_path)
-                if not df.empty and 'label' in df.columns and 'year' in df.columns:
-                    df['year'] = df['year'].astype(int)
-                    df['price'] = df['price'].astype(int)
-                    return df.sort_values(["label", "year"])
-
-            seed_rows = []
-            for label, year_price in REAL_HOUSING_PRICES.items():
-                for year, price in year_price.items():
-                    seed_rows.append({"label": label, "year": int(year), "price": int(price)})
-            df = pd.DataFrame(seed_rows)
-            df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
-            return df.sort_values(["label", "year"])
-        except Exception as e:
-            logger.error(f"데이터 로드 실패: {e}")
-            return pd.DataFrame(columns=["label", "year", "price"])
-
-    def remove_property(self, label: str) -> bool:
-        """등록된 부동산을 목록 및 이력 DB(CSV)에서 제거합니다."""
-        try:
-            self.properties = [p for p in self.properties if p["label"] != label]
-            if not self.history_df.empty and 'label' in self.history_df.columns:
-                self.history_df = self.history_df[self.history_df["label"] != label]
-                self.history_df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
-            logger.info(f"🗑️ [{label}] 부동산 데이터 삭제 완료")
-            return True
-        except Exception as e:
-            logger.error(f"부동산 삭제 에러 ({label}): {e}")
-            return False
-
-    def get_available_years(self) -> list[int]:
-        """저장된 데이터의 연도 목록을 정렬하여 반환합니다."""
-        if self.history_df.empty or 'year' not in self.history_df.columns:
-            return []
-        years = sorted(self.history_df['year'].unique().tolist())
-        return years
-
-    def get_pivot_table(self, up_to_year: int | None = None, active_labels: list[str] | None = None) -> pd.DataFrame:
-        """
-        조회된 부동산 및 연도에 맞는 데이터만 피벗 테이블로 리턴합니다.
-        """
-        try:
-            if self.history_df.empty:
-                return pd.DataFrame()
-
-            df = self.history_df.copy()
-            if up_to_year is not None:
-                df = df[df['year'] <= up_to_year]
-
-            if active_labels is not None:
-                df = df[df['label'].isin(active_labels)]
-
-            if df.empty:
-                return pd.DataFrame()
-
-            pivot = df.pivot(index='year', columns='label', values='price').sort_index()
-
-            # Total 금액 계산
-            pivot['Total'] = pivot.sum(axis=1, skipna=True)
-            pivot['Total_Diff'] = pivot['Total'].diff()
-            pivot['Total_Rate'] = (pivot['Total_Diff'] / pivot['Total'].shift(1)) * 100
-
-            return pivot
-        except Exception as e:
-            logger.error(f"피벗 연산 오류: {e}")
-            return pd.DataFrame()
-
-    def find_pnu_from_api(self, address: str, domain: str = DEFAULT_DOMAIN) -> str | None:
-        """브이월드 검색 API 2.0으로 주소 PNU 조회를 수행합니다."""
-        url = "https://api.vworld.kr/req/search"
-        params = {
-            "service": "search", "request": "search", "version": "2.0",
-            "query": address, "type": "address", "category": "parcel",
-            "format": "json", "errorformat": "json", "key": VWORLD_KEY,
-            "domain": domain
-        }
-        try:
-            logger.info(f"🌐 [브이월드 API 통신] PNU 실시간 검색 요청 (주소: '{address}')")
-            res = requests.get(url, params=params, timeout=10)
-            res.raise_for_status()
-            data = res.json()
-            response = data.get("response", {})
-            status = response.get("status")
-
-            if status == "OK":
-                items = response.get("result", {}).get("items", [])
-                if items:
-                    pnu = items[0].get("id")
-                    logger.info(f"  └ ✅ [PNU 조회 성공] {address} -> PNU[{pnu}]")
-                    return pnu
-            logger.warning(f"  └ ⚠️ [PNU 검색 완료]")
-            return None
-        except Exception as e:
-            logger.error(f"  └ ❌ [브이월드 API 통신 에러]: {e}")
-            return None
-
-    def fetch_apart_price_api(self, pnu: str, dong_nm: str, ho_nm: str, year: int, domain: str = DEFAULT_DOMAIN) -> int | None:
-        """
-        브이월드 API에서 개별공시지가 또는 속성 조회를 수행합니다.
-        """
-        url_land = "https://api.vworld.kr/ned/data/getPossessionLandPriceAttr"
-        params_land = {
-            "pnu": pnu, "stdrYear": year, "format": "json",
-            "numOfRows": 10, "pageNo": 1, "key": VWORLD_KEY, "domain": domain
-        }
-        try:
-            res = requests.get(url_land, params=params_land, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                fields = data.get("response", {}).get("fields", {}).get("field", [])
-                if isinstance(fields, list) and fields:
-                    fields = fields[0]
-                if isinstance(fields, dict) and "pblntfPrc" in fields:
-                    land_price = int(fields["pblntfPrc"])
-                    # 공시지가 기반 대략적 아파트 공시가 산출 (예: 대지권 면적 반영)
-                    apt_price = land_price * 120
-                    return apt_price
-        except Exception:
-            pass
-        return None
-
-    def fetch_all_years_for_property(self, prop: dict, start_year: int = 2020, end_year: int | None = None, domain: str = DEFAULT_DOMAIN) -> int:
-        """
-        신규 추가 아파트 주소에 대해 2020년부터 현재 연도까지의 공시가를 실제 API로 수집합니다.
-        PNU 조회가 안 되거나 데이터 수집에 실패하면 가짜 데이터를 생성하지 않고 0을 반환합니다.
-        """
-        if end_year is None:
-            end_year = datetime.now().year
-
-        label = prop["label"]
-        dong_nm = prop["dongNm"]
-        ho_nm = prop["hoNm"]
-        pnu = prop.get("pnu")
-
-        if not pnu:
-            pnu = self.find_pnu_from_api(prop["search_addr"], domain)
-            if pnu:
-                prop["pnu"] = pnu
-            else:
-                logger.warning(f"🔴 [{label}] PNU 자동 탐색 실패! 해당 주소로는 조회가 불가능합니다.")
-                return 0
-
-        logger.info(f"==================================================")
-        logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 데이터 API 조회 및 수집 시작...")
-
-        # 1. 이미 데이터가 존재하는지 확인
-        existing_rows = self.history_df[self.history_df["label"] == label]
-        if not existing_rows.empty and len(existing_rows) >= (end_year - start_year + 1):
-            cnt = len(existing_rows)
-            logger.info(f"✨ [{label}] 2020년~{end_year}년 데이터 ({cnt}개 연도) 로드 완료!")
-            return cnt
-
-
-        # 2. 연도별 실제 API 호출 수행 (가짜 고정계수 추정 제거)
-        new_rows = []
-        for year in range(start_year, end_year + 1):
-            api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, year, domain)
-            if api_price and api_price > 0:
-                new_rows.append({"label": label, "year": year, "price": api_price})
-
-        if not new_rows:
-            logger.warning(f"🔴 [{label}] 연도별 공시가격 API 수집에 실패했거나 실제 데이터가 존재하지 않습니다.")
-            return 0
-
-        df_new = pd.DataFrame(new_rows)
-        self.history_df = pd.concat([self.history_df, df_new], ignore_index=True)
-        self.history_df = self.history_df.drop_duplicates(subset=["label", "year"], keep="last")
-        self.history_df = self.history_df.sort_values(["label", "year"])
-        self.history_df.to_csv(self.history_path, index=False, encoding="utf-8-sig")
-
-        logger.info(f"✨ [{label}] 2020년~{end_year}년 공시가 데이터 {len(df_new)}건 API 수집 완료!")
-        return len(df_new)
-
-
 # ── UI 뷰 클래스 ───────────────────────────────────────────────
-class ScientificCalculatorGUI(QMainWindow):
+class ApartmentPriceGUI(QMainWindow):
     """아파트 공시지가 자동 조회 및 시각화 GUI 클래스"""
 
     def __init__(self):
         super().__init__()
-        self.logic = ScientificCalculatorLogic()
+        self.logic = ApartmentPriceLogic()
         self.active_labels = []  # 사용자가 조회한 부동산 목록만 담는 리스트
         self.init_ui()
 
     def init_ui(self):
         """UI 구성요소 초기화 및 레이아웃 설정"""
-        self.setWindowTitle("아파트 공시지가 연도별 변동 및 자산 분석 시스템 (자동 수집 & 시각화)")
+        self.setWindowTitle("아파트 공시지가 연도별 변동 및 자산 분석 시스템 (브이월드 API 실데이터 수집)")
         self.resize(1360, 920)
         self.setStyle(QStyleFactory.create("Fusion"))
 
@@ -302,7 +89,7 @@ class ScientificCalculatorGUI(QMainWindow):
         layout_main.addWidget(self.group_cards)
 
         # 2. ➕ 신규 아파트 등록 & 전수 수집 패널
-        group_input = QGroupBox("➕ 신규 아파트 등록 & 2020년~현재 자동 데이터 조회")
+        group_input = QGroupBox("➕ 신규 아파트 등록 & 2020년~현재 브이월드 API 실시간 데이터 조회")
         group_input.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
         layout_input_grid = QGridLayout(group_input)
         layout_input_grid.setContentsMargins(10, 8, 10, 8)
@@ -366,7 +153,7 @@ class ScientificCalculatorGUI(QMainWindow):
         self.btn_filter_year.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
         self.btn_filter_year.clicked.connect(self.handle_filter_year)
 
-        self.btn_fetch_all_default = QPushButton("⚡ 전체 집 2020~현재 데이터 일괄 조회 및 업데이트")
+        self.btn_fetch_all_default = QPushButton("⚡ 전체 집 2020~현재 API 일괄 조회 및 업데이트")
         self.btn_fetch_all_default.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
         self.btn_fetch_all_default.setStyleSheet("""
             QPushButton {
@@ -415,7 +202,7 @@ class ScientificCalculatorGUI(QMainWindow):
         layout_main.addWidget(splitter_main, stretch=1)
 
         # 5. 실시간 진행 로그 패널 (Log Viewer)
-        group_log = QGroupBox("📜 시스템 실시간 데이터 연동 및 조회 진행 로그")
+        group_log = QGroupBox("📜 시스템 실시간 데이터 연동 및 API 조회 진행 로그")
         group_log.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
         layout_log = QVBoxLayout(group_log)
         layout_log.setContentsMargins(6, 6, 6, 6)
@@ -437,10 +224,10 @@ class ScientificCalculatorGUI(QMainWindow):
         # 로그 신호 연결
         gui_log_handler.signals.log_signal.connect(self.append_log)
 
-        # 초기 연도 선택지 구성
+        # 연도 선택지 구성
         self.populate_year_combo()
         
-        # 시작 시 초기 대기 화면 표출 (자동 로딩 없음)
+        # 시작 시 대기 화면 표출
         self.render_empty_dashboard()
 
     def render_empty_dashboard(self):
@@ -451,15 +238,15 @@ class ScientificCalculatorGUI(QMainWindow):
 
         ax = self.fig_chart.add_subplot(1, 1, 1)
         ax.text(
-            0.5, 0.5, "💡 상단 부동산 카드의 [⚡ 데이터 조회] 버튼이나\n[➕ 신규 아파트 등록]을 이용하면 그래프가 업데이트됩니다.",
+            0.5, 0.5, "💡 상단 부동산 카드의 [⚡ 데이터 조회] 버튼이나\n[➕ 신규 아파트 등록]을 이용하면 실제 API 그래프가 표출됩니다.",
             ha='center', va='center', fontsize=12, fontweight='bold', color='#495057'
         )
         ax.axis('off')
         self.canvas_chart.draw()
-        logger.info("시스템 시작 준비 완료 — 조회를 원하는 부동산의 '⚡ 데이터 조회' 버튼을 눌러주세요.")
+        logger.info("시스템 시작 준비 완료 — 조회를 원하는 부동산의 '⚡ 데이터 조회' 버튼을 누르면 브이월드 API 데이터 수집을 진행합니다.")
 
     def _clear_layout(self, layout):
-        """레이아웃 내부의 모든 위젯과 하위 레이아웃을 완벽히 재귀 삭제합니다."""
+        """레이아웃 내부의 모든 위젯과 하위 레이아웃을 재귀 삭제합니다."""
         if layout is not None:
             while layout.count():
                 item = layout.takeAt(0)
@@ -503,7 +290,7 @@ class ScientificCalculatorGUI(QMainWindow):
             lbl_addr.setFont(QFont("Malgun Gothic", 8))
             lbl_addr.setStyleSheet("color: #495057;")
 
-            pnu_txt = prop['pnu'] if prop['pnu'] else 'PNU 등록 완료'
+            pnu_txt = prop['pnu'] if prop.get('pnu') else 'PNU 검색 예정'
             lbl_pnu = QLabel(f"🔑 PNU: {pnu_txt}")
             lbl_pnu.setFont(QFont("Malgun Gothic", 8))
             lbl_pnu.setStyleSheet("color: #6C757D;")
@@ -544,11 +331,11 @@ class ScientificCalculatorGUI(QMainWindow):
         self.layout_cards_container.addLayout(layout_cards)
 
     def handle_remove_property(self, prop: dict):
-        """선택한 부동산 삭제 처리 및 테이블/차트 갱신"""
+        """선택한 부동산 삭제 처리 및 대시보드 갱신"""
         label = prop["label"]
         reply = QMessageBox.question(
             self, "부동산 삭제 확인",
-            f"정말로 '{label}' ({prop['dongNm']}동 {prop['hoNm']}호) 부동산을 목록 및 데이터에서 삭제하시겠습니까?",
+            f"정말로 '{label}' ({prop['dongNm']}동 {prop['hoNm']}호) 부동산을 목록 및 이력 데이터에서 삭제하시겠습니까?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -563,13 +350,13 @@ class ScientificCalculatorGUI(QMainWindow):
                 self.populate_year_combo()
                 self.refresh_dashboard()
 
-                self.statusBar_info.showMessage(f"[{label}] 부동산 데이터가 삭제되었습니다.", 5000)
+                self.statusBar_info.showMessage(f"[{label}] 부동산 데이터가 정상 삭제되었습니다.", 5000)
                 QMessageBox.information(self, "삭제 완료", f"'{label}' 부동산 데이터가 성공적으로 제거되었습니다.")
 
     def handle_fetch_single_property(self, prop: dict):
-        """사용자가 선택한 특정 개별 집만 데이터 조회 및 테이블/차트 업데이트"""
+        """선택한 개별 부동산의 API 실데이터 조회 및 알람 처리"""
         label = prop["label"]
-        self.statusBar_info.showMessage(f"[{label}] 데이터 조회 및 업데이트 실행 중...")
+        self.statusBar_info.showMessage(f"[{label}] 브이월드 API 데이터 조회 및 업데이트 실행 중...")
 
         current_year = datetime.now().year
         cnt = self.logic.fetch_all_years_for_property(prop, start_year=2020, end_year=current_year)
@@ -577,8 +364,12 @@ class ScientificCalculatorGUI(QMainWindow):
         if cnt == 0:
             self.statusBar_info.showMessage(f"⚠️ [{label}] 브이월드 API 데이터 조회 실패", 5000)
             QMessageBox.warning(
-                self, "조회 실패",
-                f"⚠️ [{label}] 브이월드 API 조회가 되지 않습니다.\n해당 주소의 PNU를 찾을 수 없거나 공시가 데이터가 준비되지 않았습니다."
+                self, "조회 실패 알림",
+                f"⚠️ [{label}] 브이월드 API 조회가 진행되지 않았습니다.\n\n"
+                f"사유:\n"
+                f"1. 입력된 주소('{prop['search_addr']}')로 PNU 코드를 검색할 수 없습니다.\n"
+                f"2. 국토교통부 브이월드 서버에 해당 부동산 공시가격 응답 데이터가 없습니다.\n\n"
+                f"주소를 정확하게 입력했는지 확인해 주세요."
             )
             return
 
@@ -588,17 +379,17 @@ class ScientificCalculatorGUI(QMainWindow):
         self.populate_year_combo()
         self.refresh_dashboard()
 
-        self.statusBar_info.showMessage(f"조회 완료: [{label}] 데이터가 테이블과 차트에 업데이트되었습니다!", 5000)
-        QMessageBox.information(self, "조회 및 업데이트 완료", f"[{label}] 2020년~{current_year}년 공시가격 데이터가 성공적으로 테이블에 업데이트되었습니다!")
+        self.statusBar_info.showMessage(f"조회 완료: [{label}] 실제 API 데이터가 업데이트되었습니다!", 5000)
+        QMessageBox.information(self, "조회 및 업데이트 완료", f"[{label}] 2020년~{current_year}년 공시가격 데이터 수집 완료!\n테이블과 차트에 업데이트되었습니다.")
 
     def append_log(self, text: str):
-        """실시간 로그 패널에 로그 문자열을 추가하고 스크롤을 맨 아래로 이동"""
+        """실시간 로그 위젯에 로그 추가"""
         self.txt_log_viewer.append(text)
         self.txt_log_viewer.ensureCursorVisible()
         QApplication.processEvents()
 
     def populate_year_combo(self):
-        """연도 ComboBox 갱신"""
+        """연도 선택 ComboBox 갱신"""
         self.cmb_target_year.clear()
         years = self.logic.get_available_years()
         self.cmb_target_year.addItem("전체 (전체 누적)", None)
@@ -606,14 +397,14 @@ class ScientificCalculatorGUI(QMainWindow):
             self.cmb_target_year.addItem(f"{year}년까지 누적", year)
 
     def handle_add_custom_property(self):
-        """사용자가 입력한 새 아파트 주소로 2020년~현재 데이터 자동 생성/수집 및 차트 즉시 반영"""
+        """신규 아파트 등록 및 2020년~현재 데이터 API 자동 조회"""
         name = self.txt_name.text().strip()
         addr = self.txt_addr.text().strip()
         dong = self.txt_dong.text().strip()
         ho = self.txt_ho.text().strip()
 
         if not name or not addr or not dong or not ho:
-            QMessageBox.warning(self, "입력 오류", "별칭, 주소, 동, 호수를 모두 입력해 주세요.")
+            QMessageBox.warning(self, "입력 오류", "별칭, 주소, 동, 호수를 모두 정확히 입력해 주세요.")
             return
 
         new_prop = {
@@ -624,7 +415,7 @@ class ScientificCalculatorGUI(QMainWindow):
             "hoNm": ho
         }
 
-        self.statusBar_info.showMessage(f"'{name}' 2020년~현재 데이터 자동 수집 및 그래프 업데이트 중...")
+        self.statusBar_info.showMessage(f"'{name}' 2020년~현재 실데이터 자동 조회 중...")
 
         current_year = datetime.now().year
         cnt = self.logic.fetch_all_years_for_property(new_prop, start_year=2020, end_year=current_year)
@@ -632,8 +423,10 @@ class ScientificCalculatorGUI(QMainWindow):
         if cnt == 0:
             self.statusBar_info.showMessage(f"⚠️ [{name}] 데이터 조회 실패로 등록 취소됨", 5000)
             QMessageBox.warning(
-                self, "신규 등록 및 조회 실패",
-                f"⚠️ [{name}] 해당 주소('{addr}')로 브이월드 API 데이터 조회가 불가능합니다.\n조회가 되지 않는 주소이므로 신규 등록이 진행되지 않습니다."
+                self, "신규 등록 및 API 조회 실패",
+                f"⚠️ [{name}] 입력한 주소('{addr}')로 브이월드 API 데이터를 조회할 수 없습니다.\n\n"
+                f"조회가 불가능한 주소이므로 부동산 신규 등록이 취소되었습니다.\n"
+                f"도로명/지번 주소를 다시 확인 후 시도해 주세요."
             )
             return
 
@@ -647,36 +440,48 @@ class ScientificCalculatorGUI(QMainWindow):
         self.populate_year_combo()
         self.refresh_dashboard()
 
-        self.statusBar_info.showMessage(f"[{name}] 등록 완료! 2020년~{current_year}년 데이터가 그래프와 테이블에 반영되었습니다.", 5000)
+        self.statusBar_info.showMessage(f"[{name}] 등록 완료! API 데이터가 차트에 반영되었습니다.", 5000)
         QMessageBox.information(
-            self, "신규 아파트 등록 및 그래프 업데이트 완료",
-            f"[{name}] ({addr} {dong}동 {ho}호) 신규 등록 완료!\n2020년~{current_year}년 공시가 변동 추이가 테이블과 차트에 즉시 표출됩니다."
+            self, "신규 아파트 등록 완료",
+            f"[{name}] ({addr} {dong}동 {ho}호) 등록 완료!\n2020년~{current_year}년 공시가 실데이터가 테이블과 차트에 반영되었습니다."
         )
 
     def handle_fetch_all_properties(self):
-        """등록된 전체 부동산을 일괄 조회하여 테이블 및 차트에 업데이트"""
+        """전체 부동산 일괄 API 조회 및 알림"""
         current_year = datetime.now().year
 
         logger.info(f"==================================================")
-        logger.info(f"📊 전체 등록 부동산 ({len(self.logic.properties)}개) 2020~{current_year}년 공시가 일괄 조회 및 업데이트 실행")
+        logger.info(f"📊 전체 등록 부동산 ({len(self.logic.properties)}개) 2020~{current_year}년 API 수집 일괄 실행")
+
+        success_count = 0
+        fail_labels = []
 
         for prop in self.logic.properties:
-            self.logic.fetch_all_years_for_property(prop, start_year=2020, end_year=current_year)
-            if prop["label"] not in self.active_labels:
-                self.active_labels.append(prop["label"])
+            cnt = self.logic.fetch_all_years_for_property(prop, start_year=2020, end_year=current_year)
+            if cnt > 0:
+                success_count += 1
+                if prop["label"] not in self.active_labels:
+                    self.active_labels.append(prop["label"])
+            else:
+                fail_labels.append(prop["label"])
 
         self.render_property_cards()
         self.populate_year_combo()
         self.refresh_dashboard()
 
-        self.statusBar_info.showMessage("전체 부동산 일괄 조회 및 테이블/차트 업데이트 완료!", 5000)
-        QMessageBox.information(
-            self, "전수 업데이트 완료",
-            f"전체 부동산 2020년~{current_year}년 공시가격 데이터가 테이블과 차트에 일괄 업데이트되었습니다!"
-        )
+        if fail_labels:
+            msg = f"일부 부동산({len(fail_labels)}건: {', '.join(fail_labels)})은 API 조회 실패로 제외되고, 정상 수집된 {success_count}건이 업데이트되었습니다."
+            self.statusBar_info.showMessage(f"⚠️ {msg}", 5000)
+            QMessageBox.warning(self, "일괄 조회 부분 완료 알림", f"⚠️ {msg}")
+        else:
+            self.statusBar_info.showMessage("전체 부동산 일괄 조회 및 테이블/차트 업데이트 완료!", 5000)
+            QMessageBox.information(
+                self, "전수 업데이트 완료",
+                f"전체 부동산 2020년~{current_year}년 공시가격 실데이터가 테이블과 차트에 성공적으로 일괄 업데이트되었습니다!"
+            )
 
     def handle_filter_year(self):
-        """선택 연도까지 필터링 반영"""
+        """선택 연도까지 필터링 적용"""
         selected_year = self.cmb_target_year.currentData()
         self.refresh_dashboard(selected_year)
 
@@ -691,7 +496,7 @@ class ScientificCalculatorGUI(QMainWindow):
             logger.error(f"대시보드 갱신 에러: {e}")
 
     def update_table(self, pivot_df: pd.DataFrame):
-        """QTableWidget 데이터 표출 (X, Y 축 전치: 열=연도, 행=부동산 및 합계/변동항목)"""
+        """QTableWidget 표출 (열=연도, 행=부동산 및 합계/변동항목)"""
         if pivot_df.empty:
             self.tbl_price_history.setRowCount(0)
             self.tbl_price_history.setColumnCount(0)
@@ -700,17 +505,13 @@ class ScientificCalculatorGUI(QMainWindow):
         years = [int(y) for y in pivot_df.index]
         prop_labels = [p["label"] for p in self.logic.properties if p["label"] in pivot_df.columns]
 
-        # 열(X축): ["부동산 / 항목"] + ["2020년", "2021년", ..., "2026년"]
         headers = ["부동산 / 항목"] + [f"{y}년" for y in years]
-
-        # 행(Y축): 개별 부동산 목록 + Total + 변동액 + 변동률
         row_items = prop_labels + ["Total (합계)", "전년대비 변동액", "변동률 (%)"]
 
         self.tbl_price_history.setRowCount(len(row_items))
         self.tbl_price_history.setColumnCount(len(headers))
         self.tbl_price_history.setHorizontalHeaderLabels(headers)
 
-        # 1. 0번째 열 (행 타이틀 - 부동산/항목 이름)
         for row_idx, label in enumerate(row_items):
             item_label = QTableWidgetItem(label)
             is_special = label in ["Total (합계)", "전년대비 변동액", "변동률 (%)"]
@@ -720,11 +521,9 @@ class ScientificCalculatorGUI(QMainWindow):
                 item_label.setBackground(QColor("#E7F1FF"))
             self.tbl_price_history.setItem(row_idx, 0, item_label)
 
-        # 2. 연도별 데이터 채우기 (열 col_idx = 1 ~ len(years))
         for col_idx, year in enumerate(years, start=1):
             year_row = pivot_df.loc[year]
 
-            # 2-1. 개별 부동산 공시가 행
             for row_idx, prop_name in enumerate(prop_labels):
                 price = year_row.get(prop_name)
                 val_str = f"{price / 1e8:.2f}억" if pd.notna(price) and price > 0 else "-"
@@ -732,7 +531,6 @@ class ScientificCalculatorGUI(QMainWindow):
                 item_price.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.tbl_price_history.setItem(row_idx, col_idx, item_price)
 
-            # 2-2. Total (합계) 행
             total_row_idx = len(prop_labels)
             total_val = year_row.get("Total", 0)
             val_total_str = f"{total_val / 1e8:.2f}억" if pd.notna(total_val) and total_val > 0 else "-"
@@ -742,7 +540,6 @@ class ScientificCalculatorGUI(QMainWindow):
             item_total.setBackground(QColor("#E7F1FF"))
             self.tbl_price_history.setItem(total_row_idx, col_idx, item_total)
 
-            # 2-3. 전년대비 변동액 행
             diff_row_idx = len(prop_labels) + 1
             diff_val = year_row.get("Total_Diff")
             if pd.notna(diff_val):
@@ -756,7 +553,6 @@ class ScientificCalculatorGUI(QMainWindow):
             item_diff.setForeground(color_diff)
             self.tbl_price_history.setItem(diff_row_idx, col_idx, item_diff)
 
-            # 2-4. 변동률 (%) 행
             rate_row_idx = len(prop_labels) + 2
             rate_val = year_row.get("Total_Rate")
             if pd.notna(rate_val):
@@ -772,7 +568,7 @@ class ScientificCalculatorGUI(QMainWindow):
             self.tbl_price_history.setItem(rate_row_idx, col_idx, item_rate)
 
     def update_chart(self, pivot_df: pd.DataFrame):
-        """Matplotlib 연도별 그래프 표출"""
+        """Matplotlib 그래프 표출"""
         self.fig_chart.clear()
 
         if pivot_df.empty:
@@ -787,10 +583,10 @@ class ScientificCalculatorGUI(QMainWindow):
         colors = ['#0D6EFD', '#198754', '#D63384', '#6F42C1', '#FD7E14', '#20C997', '#E83E8C']
         markers = ['o', 's', '^', 'D', 'v', 'p', '*']
 
-        # Subplot 1: 개별 부동산 가격 추이선
+        # 1. 개별 부동산 추이선
         for idx, label in enumerate(prop_labels):
             if label in pivot_df.columns:
-                prices = pivot_df[label] / 100000000  # 억원 단위
+                prices = pivot_df[label] / 100000000
                 ax1.plot(
                     years_num, prices, label=label, marker=markers[idx % len(markers)],
                     color=colors[idx % len(colors)], linewidth=2.2, markersize=6
@@ -798,51 +594,42 @@ class ScientificCalculatorGUI(QMainWindow):
                 for x_val, y_val in zip(years_num, prices):
                     if pd.notna(y_val) and y_val > 0:
                         ax1.annotate(
-                            f"{y_val:.2f}억",
-                            xy=(x_val, y_val),
-                            xytext=(0, 4), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=7, color=colors[idx % len(colors)],
-                            fontweight='bold'
+                            f"{y_val:.2f}억", (x_val, y_val),
+                            textcoords="offset points", xytext=(0, 6), ha='center', fontsize=8
                         )
 
-        ax1.set_title("🏢 선택/조회 부동산별 공시지가 연도별 변동 추이 (단위: 억원)", fontsize=10, fontweight='bold', pad=8)
-        ax1.set_ylabel("공시가격 (억원)", fontsize=8.5, fontweight='bold')
-        ax1.set_xticks(years_num)
-        ax1.set_xticklabels([f"{y}년" for y in years_num], fontsize=8.5)
+        ax1.set_title("🏢 보유 부동산별 연도별 공시가격 추이 (억원)", fontsize=11, fontweight='bold', pad=8)
+        ax1.set_ylabel("공시가격 (억원)", fontsize=9)
         ax1.grid(True, linestyle='--', alpha=0.5)
-        ax1.legend(loc='upper left', fontsize=8, framealpha=0.85)
+        ax1.legend(loc='upper left', fontsize=8)
 
-        # Subplot 2: Total 자산 변동 막대 & 추이선
-        totals = pivot_df['Total'] / 100000000  # 억원 단위
-        bars = ax2.bar(years_num, totals, color='#339AF0', alpha=0.5, width=0.4, label='Total 합계')
-        ax2.plot(years_num, totals, color='#1864AB', marker='o', linewidth=2.5, markersize=7, label='Total 추이')
-
+        # 2. Total (합계) 막대 그래프
+        totals = pivot_df['Total'] / 100000000
+        bars = ax2.bar(years_num, totals, color='#0D6EFD', alpha=0.75, width=0.45, label='Total 합계')
         for bar in bars:
             height = bar.get_height()
             if pd.notna(height) and height > 0:
                 ax2.annotate(
-                    f"{height:.2f}억원",
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=8, fontweight='bold', color='#1864AB'
+                    f"{height:.2f}억", (bar.get_x() + bar.get_width() / 2, height),
+                    textcoords="offset points", xytext=(0, 4), ha='center', fontsize=8, fontweight='bold'
                 )
 
-        ax2.set_title("💰 Total 총 자산 연도별 변동 (단위: 억원)", fontsize=10, fontweight='bold', pad=8)
-        ax2.set_xlabel("조회 연도", fontsize=8.5, fontweight='bold')
-        ax2.set_ylabel("Total 합계 (억원)", fontsize=8.5, fontweight='bold')
-        ax2.set_xticks(years_num)
-        ax2.set_xticklabels([f"{y}년" for y in years_num], fontsize=8.5)
+        ax2.set_title("📊 전체 부동산 총 공시가격 합계 (Total)", fontsize=11, fontweight='bold', pad=8)
+        ax2.set_xlabel("연도", fontsize=9)
+        ax2.set_ylabel("총 합계 (억원)", fontsize=9)
         ax2.grid(True, linestyle='--', alpha=0.5)
-        ax2.legend(loc='upper left', fontsize=8, framealpha=0.85)
 
-        self.fig_chart.subplots_adjust(hspace=0.4, top=0.92, bottom=0.09, left=0.08, right=0.96)
+        self.fig_chart.tight_layout()
         self.canvas_chart.draw()
 
 
-# ── 구동 메인 함수 ─────────────────────────────────────────────
+# 기존 코드 호환성용 에일리어스 (ScientificCalculatorGUI)
+ScientificCalculatorGUI = ApartmentPriceGUI
+
+
 def main():
     app = QApplication(sys.argv)
-    window = ScientificCalculatorGUI()
+    window = ApartmentPriceGUI()
     window.show()
     sys.exit(app.exec())
 

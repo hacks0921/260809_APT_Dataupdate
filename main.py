@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-브이월드(V-World) API를 이용한 보유 부동산 공동주택가격 자동 조회 CLI/GUI 메인 엔트리포인트
+브이월드(V-World) API를 이용한 보유 부동산 공시가격 자동 조회 CLI/GUI 메인 엔트리포인트
 
 사용법:
     1. GUI 모드 실행 (기본):
@@ -14,16 +14,16 @@
 """
 
 import sys
-import logging
 from datetime import datetime
 import pandas as pd
-from app_gui import PROPERTIES_DEFAULT, ScientificCalculatorLogic, logger
+
+from logic import ApartmentPriceLogic, PROPERTIES_DEFAULT, logger
 
 
 def run_find_pnu():
     """등록된 부동산의 PNU를 브이월드 검색 API로 자동 탐색합니다."""
     logger.info("=== PNU 자동 검색 개시 ===")
-    logic = ScientificCalculatorLogic()
+    logic = ApartmentPriceLogic()
     for prop in PROPERTIES_DEFAULT:
         pnu = logic.find_pnu_from_api(prop["search_addr"])
         if pnu:
@@ -35,7 +35,7 @@ def run_find_pnu():
 def run_cli_mode():
     """CLI 모드: 등록된 전체 부동산에 대해 2020년부터 현재 연도까지 전수 API 수집 실행"""
     logger.info("=== CLI 모드: 2020년~현재 연도 공시지가 API 전수 수집 시작 ===")
-    logic = ScientificCalculatorLogic()
+    logic = ApartmentPriceLogic()
     current_year = datetime.now().year
     total_count = 0
 

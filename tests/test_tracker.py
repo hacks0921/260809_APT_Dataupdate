@@ -5,13 +5,13 @@
 
 import pytest
 import pandas as pd
-from app_gui import ScientificCalculatorLogic
+from logic import ApartmentPriceLogic
 
 
 def test_history_loading_initializes_empty_dataframe(tmp_path):
     """하드코딩 seed 제거 후 초기 데이터 로드 시 빈 DataFrame으로 초기화되는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
-    logic = ScientificCalculatorLogic(history_path=history_file)
+    logic = ApartmentPriceLogic(history_path=history_file)
     df = logic.history_df
     assert 'label' in df.columns
     assert 'year' in df.columns
@@ -21,7 +21,7 @@ def test_history_loading_initializes_empty_dataframe(tmp_path):
 def test_pivot_table_calculation_after_fetching(tmp_path):
     """이력 데이터 입력 후 피벗 테이블 연산 시 Total 합계 및 전년대비 변동률이 정확히 계산되는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
-    logic = ScientificCalculatorLogic(history_path=history_file)
+    logic = ApartmentPriceLogic(history_path=history_file)
 
     # 직접 유효 데이터프레임 기록 테스트
     df_sample = pd.DataFrame([
@@ -40,7 +40,7 @@ def test_pivot_table_calculation_after_fetching(tmp_path):
 def test_fetch_property_invalid_address_returns_zero(tmp_path):
     """유효하지 않은 주소/PNU로 조회 시 가짜 데이터 생성 없이 0(실패)을 반환하는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
-    logic = ScientificCalculatorLogic(history_path=history_file)
+    logic = ApartmentPriceLogic(history_path=history_file)
     invalid_prop = {
         "label": "가짜아파트",
         "search_addr": "무효한주소 99999",
@@ -57,7 +57,7 @@ def test_fetch_property_invalid_address_returns_zero(tmp_path):
 def test_remove_property_removes_from_list_and_history(tmp_path):
     """부동산 삭제 시 logic.properties 및 history_df에서 정상 제거되는지 검증합니다."""
     history_file = str(tmp_path / "test_history.csv")
-    logic = ScientificCalculatorLogic(history_path=history_file)
+    logic = ApartmentPriceLogic(history_path=history_file)
     target_label = "광명역유플래닛데시앙"
 
     initial_prop_count = len(logic.properties)
