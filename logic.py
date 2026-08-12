@@ -24,7 +24,7 @@ HISTORY_PATH = os.getenv("HISTORY_PATH", "my_properties_history.csv")
 DEFAULT_DOMAIN = os.getenv("DEFAULT_DOMAIN", "moneysimul.com")
 
 PROPERTIES_DEFAULT = [
-    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2001"},
+    {"label": "광명역유플래닛데시앙", "search_addr": "경기도 광명시 양지로 17", "pnu": "4121010600105120000", "dongNm": "104", "hoNm": "2101"},
     {"label": "도화현대홈타운2차",     "search_addr": "인천광역시 미추홀구 숙골로 114", "pnu": "2817710400109940000", "dongNm": "207", "hoNm": "405"},
     {"label": "진천 풍림아이원",       "search_addr": "충청북도 진천군 이월면 송림리 753", "pnu": "4375035025107530000", "dongNm": "201", "hoNm": "1301"},
     {"label": "월피주공1단지",         "search_addr": "경기도 안산시 상록구 광덕산안길 20", "pnu": "4127110900104480000", "dongNm": "113", "hoNm": "801"},
@@ -184,10 +184,10 @@ class ApartmentPriceLogic:
                     for f in fields:
                         f_dong = str(f.get("dongNm", "")).strip()
                         f_ho = str(f.get("hoNm", "")).strip()
-                        if f_dong == str(dong_nm).strip() and f_ho == str(ho_nm).strip():
+                        if str(dong_nm).strip() in f_dong and f_ho == str(ho_nm).strip():
                             if f.get("pblntfPc") and str(f.get("pblntfPc")).isdigit():
                                 val = int(f.get("pblntfPc"))
-                                logger.info(f"  └ 🟢 [공동주택가격 수집 성공] PNU: {query_pnu} | 연도: {year}년 | 동/호: {dong_nm}동 {ho_nm}호 -> 공시가: {val:,}원")
+                                logger.info(f"  └ 🟢 [공동주택가격(동호수매칭) 수집 성공] PNU: {query_pnu} | 연도: {year}년 | 동/호: {dong_nm}동 {ho_nm}호 -> 공시가: {val:,}원")
                                 return val
 
                     # 동/호수 exact match 없으나 단지 공시가가 존재하는 경우
