@@ -224,6 +224,7 @@ class ApartmentPriceLogic:
     def fetch_all_years_for_property(self, prop: dict, start_year: int = 2020, end_year: int | None = None, domain: str = DEFAULT_DOMAIN) -> int:
         """
         등록된 부동산 주소에 대해 2020년부터 현재 연도까지의 공시가를 브이월드 API에서 전수 수집합니다.
+        지정 주소/PNU/동/호수가 재조회될 경우 최신 API 데이터로 항상 갱신합니다.
         """
         if end_year is None:
             end_year = datetime.now().year
@@ -245,23 +246,46 @@ class ApartmentPriceLogic:
         logger.info(f"==================================================")
         logger.info(f"🚀 [{label}] ({dong_nm}동 {ho_nm}호) 2020년~{end_year}년 실제 브이월드 API 공시가 수집 개시...")
 
-        new_rows = []
-        last_valid_price = None
-
+        # 연도별 브이월드 API 수집 진행
+        prices_by_year = {}
         for year in range(start_year, end_year + 1):
             api_price = self.fetch_apart_price_api(pnu, dong_nm, ho_nm, year, domain)
             if api_price and api_price > 0:
-                last_valid_price = api_price
-                new_rows.append({"label": label, "year": year, "price": api_price})
-            elif last_valid_price is not None:
-                logger.info(f"  └ ℹ️ [{label}] {year}년 미공시 상태로 직전 연도 실공시가({last_valid_price:,}원) 연장 적용")
-                new_rows.append({"label": label, "year": year, "price": last_valid_price})
+                prices_by_year[year] = api_price
+            else:
+                prices_by_year[year] = None
 
-        if not new_rows:
+        valid_years = [y for y, p in prices_by_year.items() if p is not None and p > 0]
+        if not valid_years:
             logger.error(f"🔴 [{label}] 연도별 공시가격 실제 API 수집 실패 (해당 PNU[{pnu}] 응답 데이터가 없습니다).")
             return 0
 
+        # 보정 처리 (신축 아파트 등의 준공 전 미공시 연도는 최초 공시가로 보정)
+        first_valid_year = min(valid_years)
+        first_valid_price = prices_by_year[first_valid_year]
+
+        last_valid_price = first_valid_price
+        new_rows = []
+
+        for year in range(start_year, end_year + 1):
+            price_val = prices_by_year[year]
+            if price_val is None or price_val == 0:
+                if year < first_valid_year:
+                    # 건설 전 미공시 연도는 최초 공시가격으로 보정
+                    logger.info(f"  └ ℹ️ [{label}] {year}년 건설 전 미공시 상태로 최초 공시가({first_valid_price:,}원) 보정 적용")
+                    new_rows.append({"label": label, "year": year, "price": first_valid_price})
+                else:
+                    logger.info(f"  └ ℹ️ [{label}] {year}년 미공시 상태로 직전 연도 실공시가({last_valid_price:,}원) 연장 적용")
+                    new_rows.append({"label": label, "year": year, "price": last_valid_price})
+            else:
+                last_valid_price = price_val
+                new_rows.append({"label": label, "year": year, "price": price_val})
+
         df_new = pd.DataFrame(new_rows)
+        # 기존 특정 label의 데이터가 있는 경우 갱신
+        if not self.history_df.empty and 'label' in self.history_df.columns:
+            self.history_df = self.history_df[self.history_df["label"] != label]
+
         self.history_df = pd.concat([self.history_df, df_new], ignore_index=True)
         self.history_df = self.history_df.drop_duplicates(subset=["label", "year"], keep="last")
         self.history_df = self.history_df.sort_values(["label", "year"])
